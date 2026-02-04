@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=64", "setuptools_scm>=8", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "Mhz-Readout-Processor"
+description = "Adapter to control the Data Readout of the Megahertz System"
+dynamic = ["version"]
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.10",
+]
+dependencies = [
+    "odin-control @ git+https://github.com/odin-detector/odin-control@1.6.0#egg=odin-control",
+    "RegisterAccessor @ git+ssh://git@github.com/stfc-aeg/memory-accessor.git#subdirectory=control"
+]
+readme = "README.md"
+
+[[project.authors]] 
+email = "ashley.neaves@stfc.ac.uk"
+name = "Ashley Neaves"
+
+[project.urls]
+GitHub = "https://github.com/stfc-aeg/readout_processor"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools_scm]
+# Optional settings for setuptools_scm
+root = "."
+write_to = "src/readout_processor/_version.py"
+version_scheme = "no-guess-dev"
+local_scheme = "node-and-date"
