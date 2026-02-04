@@ -1,4 +1,4 @@
-from .readout_controller import ReadoutProcessorController, ReadoutProcessorError
+from .controller import ReadoutProcessorController, ReadoutProcessorError
 from RegisterAccessor.base.base_adapter import BaseAdapter
 
 class ReadoutProcessorAdapter(BaseAdapter):
