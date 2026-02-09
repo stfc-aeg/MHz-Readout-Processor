@@ -68,17 +68,26 @@ class ReadoutProcessorController(RegisterAccessorController):
                             {"description": "Destination MAC Address"})
             }
         }
-        aurora_lane: Register = next(self.register_map.getReg("aurora_lane_up"))
-        aurora_channel: Register = next(self.register_map.getReg("aurora_chan_up"))
-        control_reg: Register = next(self.register_map.getReg("hexitec_mhz_front_end_hexitec_hist_frame_generator_acq_ctrl"))
-        clock_resets: Register = next(self.register_map.getReg("domain_resets"))
-        frameNum_upper: Register = next(self.register_map.getReg("hexitec_mhz_front_end_hexitec_hist_frame_generator_frame_number_upper"))
-        frameNum_lower: Register = next(self.register_map.getReg("hexitec_mhz_front_end_hexitec_hist_frame_generator_frame_number_lower"))
+        try:
+            aurora_lane: Register = next(self.register_map.getReg("aurora_lane_up"))
+            aurora_channel: Register = next(self.register_map.getReg("aurora_chan_up"))
+            control_reg: Register = next(self.register_map.getReg("hexitec_mhz_front_end_hexitec_hist_frame_generator_acq_ctrl"))
+            clock_resets: Register = next(self.register_map.getReg("domain_resets"))
+            frameNum_upper: Register = next(self.register_map.getReg("hexitec_mhz_front_end_hexitec_hist_frame_generator_frame_number_upper"))
+            frameNum_lower: Register = next(self.register_map.getReg("hexitec_mhz_front_end_hexitec_hist_frame_generator_frame_number_lower"))
+
+            cmac_status: Register = next(self.register_map.getReg("cmac_status"))
+        except StopIteration:
+            logging.error("One of the required Registers could not be found in the Register Map.")
 
         clock_resets_tree = self.create_reg_paramTree(clock_resets)['fields']
         selected_resets = {k: clock_resets_tree[k] for k in 
                            ("cmac_0_reset", "cmac_1_reset", "cmac_2_reset", "aurora_reset", "data_path_reset")}
         control_tree = self.create_reg_paramTree(control_reg)['fields']
+
+        cmac_tree = self.create_reg_paramTree(cmac_status)["fields"]
+        selected_cmac = {k: cmac_tree[k] for k in
+                         ("cmac_0_lane_up", "cmac_1_lane_up")}
         tree["status"] = {
             "aurora_lane": (partial(self.get_bool, self.create_read_access_param(aurora_lane)),
                                None, {"description": aurora_lane.desc}),
@@ -89,7 +98,8 @@ class ReadoutProcessorController(RegisterAccessorController):
                                      self.create_read_access_param(frameNum_lower)),
                              None, {"description": "Current Frame number, 48 bit value"}),
             "clock_resets": selected_resets,
-            "acq_control": control_tree
+            "acq_control": control_tree,
+            "cmac_lane_status": selected_cmac
         }
 
         self.param_tree = ParameterTree(tree)
