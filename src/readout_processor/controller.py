@@ -1,19 +1,50 @@
-import logging
+
+import sys
 from odin.adapters.parameter_tree import ParameterTree, ParameterTreeError
 from RegisterAccessor.controller import RegisterAccessorController, ControllerError
 from RegisterAccessor.RegisterMap import Register
 from .udp_core import UdpCore
-from ipaddress import ip_address
 
 from typing import Callable
 from functools import partial
+from dataclasses import dataclass
+from enum import IntFlag, auto
+
+import logging
 
 class ReadoutProcessorError(ControllerError):
     """Simple exception class to wrap lower-level exceptions."""
 
+@dataclass
+class ReadoutRegisters:
+    """Container for the registers required to montior and reset the Data Readout"""
+    aurora_lane: Register = None
+    aurora_channel: Register = None
+    acq_control: Register = None
+    clock_resets: Register = None
+    frame_num_upper: Register = None
+    frame_num_lower: Register = None
+    cmac_status: Register = None
+
+class ConnectionStatus(IntFlag):
+    LANE = auto()
+    CHAN = auto()
+    CMAC_0 = auto()
+    CMAC_1 = auto()
+
 
 class ReadoutProcessorController(RegisterAccessorController):
     """Controller class for READOUTPROCESSOR."""
+
+    
+    SELECT_REGS = {"aurora_lane": "aurora_lane_up",
+                   "aurora_channel": "aurora_chan_up",
+                   "acq_control": "hexitec_mhz_front_end_hexitec_hist_frame_generator_acq_ctrl",
+                   "clock_resets": "domain_resets",
+                   "frame_num_upper": "hexitec_mhz_front_end_hexitec_hist_frame_generator_frame_number_upper",
+                   "frame_num_lower": "hexitec_mhz_front_end_hexitec_hist_frame_generator_frame_number_lower",
+                   "cmac_status": "cmac_status"}
+    """Dict of specific registers to get from the full register map"""
 
     def __init__(self, options):
         super().__init__(options)
@@ -21,89 +52,67 @@ class ReadoutProcessorController(RegisterAccessorController):
         # overriding RegisterAccessor Param Tree creation
         tree = {}
         tree["control"] = {
-            "open": (None, lambda _: self.open_device(), {"description": "Open connetion to the device"}),
-            "close": (None, lambda _: self.accessor.close(), {"description": "Close connetion to the device"}),
+            "open": (None, lambda _: self.open_device(),
+                     {"description": "Open connection to the device"}),
+            "close": (None, lambda _: self.accessor.close(),
+                      {"description": "Close connection to the device"}),
             "connected": (lambda: self.accessor.isConnected, None)
         }
 
-        udp_0 = UdpCore(self.register_map, 0)
-        udp_1 = UdpCore(self.register_map, 1)
-
+        # setup UDP trees
+        udp_0 = UdpCore(self.register_map, 0, self.create_read_access_param, self.write_register)
+        udp_1 = UdpCore(self.register_map, 1, self.create_read_access_param, self.write_register)
 
         tree["udp"] = {
-            "core_0": {
-                "dest_ip": (partial(self.get_ip, self.create_read_access_param(udp_0.dst_ip)),
-                            partial(self.set_ip, udp_0.dst_ip),
-                            {"description": udp_0.dst_ip.desc}),
-                "src_ip":  (partial(self.get_ip, self.create_read_access_param(udp_0.src_ip)),
-                            partial(self.set_ip, udp_0.src_ip),
-                            {"description": udp_0.src_ip.desc}),
-                "src_mac": (partial(self.get_mac,
-                                    self.create_read_access_param(udp_0.src_mac[1]),
-                                    self.create_read_access_param(udp_0.src_mac[0])),
-                            partial(self.set_mac, udp_0.src_mac[1], udp_0.src_mac[0]),
-                            {"description": "Source MAC Address"}),
-                "dest_mac": (partial(self.get_mac,
-                                    self.create_read_access_param(udp_0.dst_mac[1]),
-                                    self.create_read_access_param(udp_0.dst_mac[0])),
-                            partial(self.set_mac, udp_0.dst_mac[1], udp_0.dst_mac[0]),
-                            {"description": "Destination MAC Address"})
-            },
-            "core_1": {
-                "dest_ip": (partial(self.get_ip, self.create_read_access_param(udp_1.dst_ip)),
-                            partial(self.set_ip, udp_1.dst_ip),
-                            {"description": udp_1.dst_ip.desc}),
-                "src_ip":  (partial(self.get_ip, self.create_read_access_param(udp_1.src_ip)),
-                            partial(self.set_ip, udp_1.src_ip),
-                            {"description": udp_1.src_ip.desc}),
-                "src_mac": (partial(self.get_mac,
-                                    self.create_read_access_param(udp_1.src_mac[1]),
-                                    self.create_read_access_param(udp_1.src_mac[0])),
-                            partial(self.set_mac, udp_1.src_mac[1], udp_1.src_mac[0]),
-                            {"description": "Source MAC Address"}),
-                "dest_mac": (partial(self.get_mac,
-                                    self.create_read_access_param(udp_1.dst_mac[1]),
-                                    self.create_read_access_param(udp_1.dst_mac[0])),
-                            partial(self.set_mac, udp_1.dst_mac[1], udp_1.dst_mac[0]),
-                            {"description": "Destination MAC Address"})
-            }
+            "core_0": udp_0.tree,
+            "core_1": udp_1.tree
         }
+        # get the specific registers needed to monitor/reset the readout device
         try:
-            aurora_lane: Register = next(self.register_map.getReg("aurora_lane_up"))
-            aurora_channel: Register = next(self.register_map.getReg("aurora_chan_up"))
-            control_reg: Register = next(self.register_map.getReg("hexitec_mhz_front_end_hexitec_hist_frame_generator_acq_ctrl"))
-            clock_resets: Register = next(self.register_map.getReg("domain_resets"))
-            frameNum_upper: Register = next(self.register_map.getReg("hexitec_mhz_front_end_hexitec_hist_frame_generator_frame_number_upper"))
-            frameNum_lower: Register = next(self.register_map.getReg("hexitec_mhz_front_end_hexitec_hist_frame_generator_frame_number_lower"))
-
-            cmac_status: Register = next(self.register_map.getReg("cmac_status"))
+            self.registers: ReadoutRegisters = ReadoutRegisters()
+            for key, val in self.SELECT_REGS.items():
+                regs = self.register_map.getReg(val)
+                setattr(self.registers, key, next(regs))
         except StopIteration:
             logging.error("One of the required Registers could not be found in the Register Map.")
 
-        clock_resets_tree = self.create_reg_paramTree(clock_resets)['fields']
-        selected_resets = {k: clock_resets_tree[k] for k in 
-                           ("cmac_0_reset", "cmac_1_reset", "cmac_2_reset", "aurora_reset", "data_path_reset")}
-        control_tree = self.create_reg_paramTree(control_reg)['fields']
+        clock_resets_tree = self.create_reg_paramTree(self.registers.clock_resets)['fields']
+        selected_resets = {k: clock_resets_tree[k] for k in
+                           ("cmac_0_reset", "cmac_1_reset", "cmac_2_reset",
+                            "aurora_reset", "data_path_reset")}
 
-        cmac_tree = self.create_reg_paramTree(cmac_status)["fields"]
+        control_tree = self.create_reg_paramTree(self.registers.acq_control)['fields']
+
+        cmac_tree = self.create_reg_paramTree(self.registers.cmac_status)['fields']
         selected_cmac = {k: cmac_tree[k] for k in
                          ("cmac_0_lane_up", "cmac_1_lane_up")}
+
+        aurora_lane_read = self.create_reg_paramTree(self.registers.aurora_lane)["value"]
+        aurora_channel_read = self.create_reg_paramTree(self.registers.aurora_channel)["value"]
+
+        frame_num_upper_read = self.create_read_access_param(self.registers.frame_num_upper)
+        frame_num_lower_read = self.create_read_access_param(self.registers.frame_num_lower)
+
         tree["status"] = {
-            "aurora_lane": (partial(self.get_bool, self.create_read_access_param(aurora_lane)),
-                               None, {"description": aurora_lane.desc}),
-            "aurora_channel": (partial(self.get_bool, self.create_read_access_param(aurora_channel)),
-                               None, {"description": aurora_channel.desc}),
+            "is_running": (self.get_connection_status, None,
+                           {"description": "Represents if the readout device is correctly running"}),
+            "reset": (None, lambda _: self.reset(),
+                      {"description": "Reset the readout device, if something is wrong."}),
+            "reactivate": (None, lambda _: self.setup_after_reset(),
+                           {"description": "Reactivate readout after a reset process"}),
+            "aurora": {
+                "lane": aurora_lane_read,
+                "channel": aurora_channel_read
+            },
             "frame_number": (partial(self.get_frameNum,
-                                     self.create_read_access_param(frameNum_upper),
-                                     self.create_read_access_param(frameNum_lower)),
+                                     frame_num_upper_read, frame_num_lower_read),
                              None, {"description": "Current Frame number, 48 bit value"}),
             "clock_resets": selected_resets,
             "acq_control": control_tree,
-            "cmac_lane_status": selected_cmac
+            "cmac": selected_cmac
         }
 
         self.param_tree = ParameterTree(tree)
-        
 
     def initialize(self, adapters):
         self.adapters = adapters
@@ -125,46 +134,71 @@ class ReadoutProcessorController(RegisterAccessorController):
         except (ParameterTreeError, ControllerError) as error:
             logging.error(error)
             raise ReadoutProcessorError(error)
-        
-    def get_ip(self, read_accessor: Callable[[], int]) -> str:
-        addr = ip_address(read_accessor())
-        return addr.compressed
 
-    def set_ip(self, reg: Register, val: str) -> None:
-        addr = ip_address(val)
-        self.write_register(addr.packed[::-1], reg)
-
-    def get_mac(self, read_access_upper: Callable[[], int], read_access_lower: Callable[[], int]) -> str:
-        upper_val = read_access_upper()
-        lower_val = read_access_lower()
-
-        full_val = lower_val | (upper_val << 32)
-        parts = [
-            (full_val >> 40) & 0xFF,
-            (full_val >> 32) & 0xFF,
-            (full_val >> 24) & 0xFF,
-            (full_val >> 16) & 0xFF,
-            (full_val >> 8)  & 0xFF,
-            (full_val) & 0xFF
-        ]
-        return ":".join(f"{val:02X}" for val in parts)
-    
-    def set_mac(self, upper_reg: Register, lower_reg: Register, val: str) -> None:
-
-        parts = [int(x, 16) for x in val.split(":")]
-
-        upper_val = (parts[0] << 8) | parts[1]
-        lower_val = (parts[2] << 24) | (parts[3] << 16) | (parts[4] << 8) | parts[5]
-
-        self.write_register(upper_val, upper_reg)
-        self.write_register(lower_val, lower_reg)
-
-    def get_bool(self, read_accessor: Callable[[], int]):
-        return bool(read_accessor())
-    
     def get_frameNum(self, read_access_upper: Callable[[], int], read_access_lower: Callable[[], int]) -> str:
         upper = read_access_upper()
         lower = read_access_lower()
 
         return lower | (upper << 32)
 
+    def get_connection_status(self) -> bool:
+        status = True
+
+        chan = self.registers.aurora_channel
+        lane = self.registers.aurora_lane
+        cmac = self.registers.cmac_status
+
+        cmac_0 = next(bit for bit in cmac.bitFields if bit.name == "cmac_0_lane_up")
+        cmac_1 = next(bit for bit in cmac.bitFields if bit.name == "cmac_1_lane_up")
+
+        # this value means the aurora chan/lane values are valid.
+        aurora_good_val = 0xFFFFF
+
+        if self.read_register(chan) != aurora_good_val:
+            status = False
+        if self.read_register(lane) != aurora_good_val:
+            status = False
+        if not self.read_field(cmac, cmac_0):
+            status = False
+        if not self.read_field(cmac, cmac_1):
+            status = False
+        return status
+        
+
+    def reset(self):
+        """Trigger a reset of the Readout device. Based on state machine in Mhz Detector, turns off bits in
+        control reg and toggles reset bits HIGH then LOW to trigger reset"""
+
+        logging.debug("Readout Manual trigger and acquire OFF")
+        control = self.registers.acq_control
+        resets = self.registers.clock_resets
+        
+        control_fields = [bit for bit in control.bitFields if bit.name in ("acquire", "manual_trig")]
+        reset_fields = [bit for bit in resets.bitFields if bit.name in ("data_path_reset", "aurora_reset",
+                                                                        "cmac_0_reset", "cmac_1_reset", "cmac_2_reset")]
+        try:
+            # disable acquire and manual trigger bits
+            for bit in control_fields:
+                self.write_field(0, control, bit)
+
+            # toggle reset bits high then low
+            for bit in reset_fields:
+                self.write_field(1, resets, bit)
+                self.write_field(0, resets, bit)
+
+        except (ReadoutProcessorError, ControllerError) as err:
+            logging.error("RESET FAILED: %s", err)
+
+    def setup_after_reset(self):
+        """Turn Manual trigger and acquire back on after a successful reset"""
+
+        logging.debug("Manual trigger and acquire ON")
+        control = self.registers.acq_control
+
+        control_fields = [bit for bit in control.bitFields if bit.name in ("acquire", "manual_trig")]
+
+        try:
+            for bit in control_fields:
+                self.write_field(1, control, bit)
+        except (ReadoutProcessorError, ControllerError) as err:
+            logging.error("SETUP AFTER RESET FAILED: %s", err)
