@@ -1,19 +1,20 @@
 
-import sys
+import logging
+from dataclasses import dataclass
+from enum import IntFlag, auto
+from functools import partial
+from typing import Callable
+
 from odin.adapters.parameter_tree import ParameterTree, ParameterTreeError
 from RegisterAccessor.controller import RegisterAccessorController, ControllerError
 from RegisterAccessor.RegisterMap import Register
+
 from .udp_core import UdpCore
 
-from typing import Callable
-from functools import partial
-from dataclasses import dataclass
-from enum import IntFlag, auto
-
-import logging
 
 class ReadoutProcessorError(ControllerError):
     """Simple exception class to wrap lower-level exceptions."""
+
 
 @dataclass
 class ReadoutRegisters:
@@ -26,6 +27,7 @@ class ReadoutRegisters:
     frame_num_lower: Register = None
     cmac_status: Register = None
 
+
 class ConnectionStatus(IntFlag):
     LANE = auto()
     CHAN = auto()
@@ -36,13 +38,14 @@ class ConnectionStatus(IntFlag):
 class ReadoutProcessorController(RegisterAccessorController):
     """Controller class for READOUTPROCESSOR."""
 
-    
     SELECT_REGS = {"aurora_lane": "aurora_lane_up",
                    "aurora_channel": "aurora_chan_up",
                    "acq_control": "hexitec_mhz_front_end_hexitec_hist_frame_generator_acq_ctrl",
                    "clock_resets": "domain_resets",
-                   "frame_num_upper": "hexitec_mhz_front_end_hexitec_hist_frame_generator_frame_number_upper",
-                   "frame_num_lower": "hexitec_mhz_front_end_hexitec_hist_frame_generator_frame_number_lower",
+                   "frame_num_upper": "hexitec_mhz_front_end_hexitec_hist_frame_generator"
+                                      "_frame_number_upper",
+                   "frame_num_lower": "hexitec_mhz_front_end_hexitec_hist_frame_generator"
+                                      "_frame_number_lower",
                    "cmac_status": "cmac_status"}
     """Dict of specific registers to get from the full register map"""
 
@@ -60,8 +63,10 @@ class ReadoutProcessorController(RegisterAccessorController):
         }
 
         # setup UDP trees
-        udp_0 = UdpCore(self.register_map, 0, self.create_read_access_param, self.write_register)
-        udp_1 = UdpCore(self.register_map, 1, self.create_read_access_param, self.write_register)
+        udp_0 = UdpCore(self.register_map, 0,
+                        self.create_read_access_param, self.write_register)
+        udp_1 = UdpCore(self.register_map, 1,
+                        self.create_read_access_param, self.write_register)
 
         tree["udp"] = {
             "core_0": udp_0.tree,
@@ -84,27 +89,33 @@ class ReadoutProcessorController(RegisterAccessorController):
         control_tree = self.create_reg_paramTree(self.registers.acq_control)['fields']
 
         cmac_tree = self.create_reg_paramTree(self.registers.cmac_status)['fields']
-        selected_cmac = {k: cmac_tree[k] for k in
-                         ("cmac_0_lane_up", "cmac_1_lane_up")}
+        selected_cmac = {k: cmac_tree[k] for k in ("cmac_0_lane_up", "cmac_1_lane_up")}
 
-        aurora_lane_read = self.create_reg_paramTree(self.registers.aurora_lane)["value"]
-        aurora_channel_read = self.create_reg_paramTree(self.registers.aurora_channel)["value"]
+        aurora_lane_read = self.create_read_access_param(self.registers.aurora_lane)
+        aurora_chan_read = self.create_read_access_param(self.registers.aurora_channel)
 
         frame_num_upper_read = self.create_read_access_param(self.registers.frame_num_upper)
         frame_num_lower_read = self.create_read_access_param(self.registers.frame_num_lower)
 
+        # value for an active aurora lane/channel.
+        # Any other value means something is wrong
+        self.aurora_good_val = 0xFFFFF
+
         tree["status"] = {
             "is_running": (self.get_connection_status, None,
-                           {"description": "Represents if the readout device is correctly running"}),
+                           {"description": "Represents if the readout device is correctly running"
+                            ". If false, check aurora and cmac values"}),
             "reset": (None, lambda _: self.reset(),
                       {"description": "Reset the readout device, if something is wrong."}),
             "reactivate": (None, lambda _: self.setup_after_reset(),
                            {"description": "Reactivate readout after a reset process"}),
             "aurora": {
-                "lane": aurora_lane_read,
-                "channel": aurora_channel_read
+                "lane": (lambda: aurora_lane_read() == self.aurora_good_val, None,
+                         {"description": "Aurora Lane Status"}),
+                "channel": (lambda: aurora_chan_read() == self.aurora_good_val, None,
+                            {"description": "Aurora Channel Status"})
             },
-            "frame_number": (partial(self.get_frameNum,
+            "frame_number": (partial(self.get_frame_num,
                                      frame_num_upper_read, frame_num_lower_read),
                              None, {"description": "Current Frame number, 48 bit value"}),
             "clock_resets": selected_resets,
@@ -135,7 +146,8 @@ class ReadoutProcessorController(RegisterAccessorController):
             logging.error(error)
             raise ReadoutProcessorError(error)
 
-    def get_frameNum(self, read_access_upper: Callable[[], int], read_access_lower: Callable[[], int]) -> str:
+    def get_frame_num(self, read_access_upper: Callable[[], int],
+                      read_access_lower: Callable[[], int]) -> str:
         upper = read_access_upper()
         lower = read_access_lower()
 
@@ -148,8 +160,13 @@ class ReadoutProcessorController(RegisterAccessorController):
         lane = self.registers.aurora_lane
         cmac = self.registers.cmac_status
 
-        cmac_0 = next(bit for bit in cmac.bitFields if bit.name == "cmac_0_lane_up")
-        cmac_1 = next(bit for bit in cmac.bitFields if bit.name == "cmac_1_lane_up")
+        # using "next" to get the first bit in the bitfield that matches
+        # the name. Should only be one, but is tidier than getting it
+        # using an index
+        cmac_0 = next(bit for bit in cmac.bitFields
+                      if bit.name == "cmac_0_lane_up")
+        cmac_1 = next(bit for bit in cmac.bitFields
+                      if bit.name == "cmac_1_lane_up")
 
         # this value means the aurora chan/lane values are valid.
         aurora_good_val = 0xFFFFF
@@ -163,19 +180,21 @@ class ReadoutProcessorController(RegisterAccessorController):
         if not self.read_field(cmac, cmac_1):
             status = False
         return status
-        
 
     def reset(self):
-        """Trigger a reset of the Readout device. Based on state machine in Mhz Detector, turns off bits in
-        control reg and toggles reset bits HIGH then LOW to trigger reset"""
+        """Trigger a reset of the Readout device. Based on state machine in
+        Mhz Detector, turns off bits in control reg and toggles reset bits
+        HIGH then LOW to trigger reset"""
 
         logging.debug("Readout Manual trigger and acquire OFF")
         control = self.registers.acq_control
         resets = self.registers.clock_resets
-        
-        control_fields = [bit for bit in control.bitFields if bit.name in ("acquire", "manual_trig")]
-        reset_fields = [bit for bit in resets.bitFields if bit.name in ("data_path_reset", "aurora_reset",
-                                                                        "cmac_0_reset", "cmac_1_reset", "cmac_2_reset")]
+
+        control_fields = [bit for bit in control.bitFields
+                          if bit.name in ("acquire", "manual_trig")]
+        reset_fields = [bit for bit in resets.bitFields
+                        if bit.name in ("data_path_reset", "aurora_reset",
+                                        "cmac_0_reset", "cmac_1_reset", "cmac_2_reset")]
         try:
             # disable acquire and manual trigger bits
             for bit in control_fields:
@@ -195,7 +214,8 @@ class ReadoutProcessorController(RegisterAccessorController):
         logging.debug("Manual trigger and acquire ON")
         control = self.registers.acq_control
 
-        control_fields = [bit for bit in control.bitFields if bit.name in ("acquire", "manual_trig")]
+        control_fields = [bit for bit in control.bitFields
+                          if bit.name in ("acquire", "manual_trig")]
 
         try:
             for bit in control_fields:
