@@ -3,8 +3,8 @@ requires = ["setuptools>=64", "setuptools_scm>=8", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "Mhz-Readout-Processor"
-description = "Adapter to control the Data Readout of the Megahertz System"
+name = "mhz-readout"
+description = "Adapter to control the Data Readout of the Hexitec Megahertz System"
 dynamic = ["version"]
 requires-python = ">=3.10"
 classifiers = [
