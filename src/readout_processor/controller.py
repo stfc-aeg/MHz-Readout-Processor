@@ -3,11 +3,11 @@ import logging
 from dataclasses import dataclass
 from enum import IntFlag, auto
 from functools import partial
-from typing import Callable
+from typing import Callable, Literal, get_args
 
 from odin.adapters.parameter_tree import ParameterTree, ParameterTreeError
 from RegisterAccessor.controller import RegisterAccessorController, ControllerError
-from RegisterAccessor.RegisterMap import Register
+from RegisterAccessor.RegisterMap import Register, BitField
 
 from .udp_core import UdpCore
 
@@ -18,7 +18,7 @@ class ReadoutProcessorError(ControllerError):
 
 @dataclass
 class ReadoutRegisters:
-    """Container for the registers required to montior and reset the Data Readout"""
+    """Container for the registers required to monitor and reset the Data Readout"""
     aurora_lane: Register = None
     aurora_channel: Register = None
     acq_control: Register = None
@@ -26,6 +26,7 @@ class ReadoutRegisters:
     frame_num_upper: Register = None
     frame_num_lower: Register = None
     cmac_status: Register = None
+    trigger: Register = None
 
 
 class ConnectionStatus(IntFlag):
@@ -33,6 +34,18 @@ class ConnectionStatus(IntFlag):
     CHAN = auto()
     CMAC_0 = auto()
     CMAC_1 = auto()
+
+
+TriggerModes = Literal["Step Scan", "Burst Mode", "Continuous Mode"]
+TriggerFieldNames = Literal["trigger_mode",
+                            "trigger_resets_time_frame_en",
+                            "trigger_polarity",
+                            "software_histogram_trigger",
+                            "trigger_disable"]
+TriggerPolarity = Literal["Level High",
+                          "Level Low",
+                          "Rising Edge",
+                          "Falling Edge"]
 
 
 class ReadoutProcessorController(RegisterAccessorController):
@@ -46,7 +59,8 @@ class ReadoutProcessorController(RegisterAccessorController):
                                       "_frame_number_upper",
                    "frame_num_lower": "hexitec_mhz_front_end_hexitec_hist_frame_generator"
                                       "_frame_number_lower",
-                   "cmac_status": "cmac_status"}
+                   "cmac_status": "cmac_status",
+                   "trigger": "hexitec_mhz_front_end_hexitec_hist_frame_generator_trigger_ctrl"}
     """Dict of specific registers to get from the full register map"""
 
     def __init__(self, options):
@@ -118,9 +132,29 @@ class ReadoutProcessorController(RegisterAccessorController):
             "frame_number": (partial(self.get_frame_num,
                                      frame_num_upper_read, frame_num_lower_read),
                              None, {"description": "Current Frame number, 48 bit value"}),
+            "frame_changing": (self.frame_number_changing, None),
             "clock_resets": selected_resets,
             "acq_control": control_tree,
             "cmac": selected_cmac
+        }
+
+        # Additional Triggering Param Tree Branch and register
+
+        self.trigger_fields: dict[TriggerFieldNames, BitField] = {
+            bit.name: bit for bit in self.registers.trigger.bitFields
+        }
+
+        tree["trigger"] = {
+            "enable": (self.get_enable_trigger, self.set_enable_trigger),
+            "mode": (self.get_trigger_mode, self.set_trigger_mode,
+                     {"allowed_values": list(get_args(TriggerModes))}),
+            "polarity": (self.get_trigger_polarity, self.set_trigger_polarity,
+                         {"allowed_values": list(get_args(TriggerPolarity)),
+                          "description": "Set the type of signal that will create a Trigger"}),
+            "reset_time_frame": (
+                self.get_reset_tf,
+                self.set_reset_tf,
+                {"description": "Reset time frame after every trigger in Burst Mode"})
         }
 
         self.param_tree = ParameterTree(tree)
@@ -222,3 +256,76 @@ class ReadoutProcessorController(RegisterAccessorController):
                 self.write_field(1, control, bit)
         except (ReadoutProcessorError, ControllerError) as err:
             logging.error("SETUP AFTER RESET FAILED: %s", err)
+
+    def frame_number_changing(self):
+        """Frame number changes so fast I think just reading twice will do the trick"""
+
+        first = (self.read_register(self.registers.frame_num_lower)
+                 | (self.read_register(self.registers.frame_num_upper) << 32))
+        second = (self.read_register(self.registers.frame_num_lower)
+                  | (self.read_register(self.registers.frame_num_upper) << 32))
+        third = (self.read_register(self.registers.frame_num_lower)
+                 | (self.read_register(self.registers.frame_num_upper) << 32))
+        return any((first != second, first != third, second != third))
+
+    # Triggering methods below
+    def get_enable_trigger(self):
+        return self.read_field(
+            self.registers.trigger,
+            self.trigger_fields["trigger_disable"]
+        ) == 0
+
+    def set_enable_trigger(self, enable: bool):
+
+        field = self.trigger_fields["trigger_disable"]
+        value = 0 if enable else 1
+        try:
+            self.write_field(value, self.registers.trigger, field)
+        except (ReadoutProcessorError, ControllerError) as err:
+            logging.error("Trigger Enable/Disable failed: %s", err)
+
+    def get_trigger_mode(self):
+        val = self.read_field(self.registers.trigger,
+                              self.trigger_fields["trigger_mode"])
+        return get_args(TriggerModes)[val]
+
+    def set_trigger_mode(self, mode: TriggerModes):
+
+        was_enabled = self.get_enable_trigger()
+        if was_enabled:
+            self.set_enable_trigger(False)
+        field = self.trigger_fields["trigger_mode"]
+        val = get_args(TriggerModes).index(mode)
+
+        self.write_field(val, self.registers.trigger, field)
+
+        if was_enabled:
+            self.set_enable_trigger(True)
+
+    def get_trigger_polarity(self):
+        val = self.read_field(self.registers.trigger,
+                              self.trigger_fields["trigger_polarity"])
+        return get_args(TriggerPolarity)[val]
+
+    def set_trigger_polarity(self, pol: TriggerPolarity):
+        was_enabled = self.get_enable_trigger()
+        if was_enabled:
+            self.set_enable_trigger(False)
+        val = get_args(TriggerPolarity).index(pol)
+
+        self.write_field(val, self.registers.trigger,
+                         self.trigger_fields["trigger_polarity"])
+
+        if was_enabled:
+            self.set_enable_trigger(True)
+
+    def get_reset_tf(self):
+        val = self.read_field(self.registers.trigger,
+                              self.trigger_fields["trigger_resets_time_frame_en"])
+        return val == 1
+
+    def set_reset_tf(self, reset: bool):
+        val = 1 if reset else 0
+
+        self.write_field(val, self.registers.trigger,
+                         self.trigger_fields["trigger_resets_time_frame_en"])
