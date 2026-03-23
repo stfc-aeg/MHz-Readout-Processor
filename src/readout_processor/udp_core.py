@@ -1,8 +1,7 @@
 import sys
-
-from typing import Callable
 from functools import partial
 from ipaddress import ip_address
+from typing import Callable
 
 from RegisterAccessor.RegisterMap import Register, RegisterMap, RegisterMapDict
 

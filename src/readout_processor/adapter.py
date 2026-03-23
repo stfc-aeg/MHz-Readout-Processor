@@ -1,5 +1,6 @@
-from .controller import ReadoutProcessorController, ReadoutProcessorError
 from RegisterAccessor.base.base_adapter import BaseAdapter
+
+from .controller import ReadoutProcessorController, ReadoutProcessorError
 
 
 class ReadoutProcessorAdapter(BaseAdapter):
