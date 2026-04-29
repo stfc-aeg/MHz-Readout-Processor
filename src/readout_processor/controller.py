@@ -1,15 +1,15 @@
 
 import logging
 from dataclasses import dataclass
-from enum import IntFlag, auto
 from functools import partial
 from typing import Callable
 
 from odin.adapters.parameter_tree import ParameterTree, ParameterTreeError
-from RegisterAccessor.controller import RegisterAccessorController, ControllerError
+from RegisterAccessor.controller import ControllerError, RegisterAccessorController
 from RegisterAccessor.RegisterMap import Register
 
 from .udp_core import UdpCore
+from .trigger import TriggerController
 
 
 class ReadoutProcessorError(ControllerError):
@@ -18,7 +18,7 @@ class ReadoutProcessorError(ControllerError):
 
 @dataclass
 class ReadoutRegisters:
-    """Container for the registers required to montior and reset the Data Readout"""
+    """Container for the registers required to monitor and reset the Data Readout"""
     aurora_lane: Register = None
     aurora_channel: Register = None
     acq_control: Register = None
@@ -26,13 +26,6 @@ class ReadoutRegisters:
     frame_num_upper: Register = None
     frame_num_lower: Register = None
     cmac_status: Register = None
-
-
-class ConnectionStatus(IntFlag):
-    LANE = auto()
-    CHAN = auto()
-    CMAC_0 = auto()
-    CMAC_1 = auto()
 
 
 class ReadoutProcessorController(RegisterAccessorController):
@@ -67,11 +60,18 @@ class ReadoutProcessorController(RegisterAccessorController):
                         self.create_read_access_param, self.write_register)
         udp_1 = UdpCore(self.register_map, 1,
                         self.create_read_access_param, self.write_register)
-
         tree["udp"] = {
             "core_0": udp_0.tree,
             "core_1": udp_1.tree
         }
+
+        trigger = TriggerController(
+            self.register_map,
+            self.read_register, self.write_register,
+            self.read_field, self.write_field)
+
+        tree["trigger"] = trigger.tree
+
         # get the specific registers needed to monitor/reset the readout device
         try:
             self.registers: ReadoutRegisters = ReadoutRegisters()
@@ -118,6 +118,7 @@ class ReadoutProcessorController(RegisterAccessorController):
             "frame_number": (partial(self.get_frame_num,
                                      frame_num_upper_read, frame_num_lower_read),
                              None, {"description": "Current Frame number, 48 bit value"}),
+            "frame_changing": (self.frame_number_changing, None),
             "clock_resets": selected_resets,
             "acq_control": control_tree,
             "cmac": selected_cmac
@@ -222,3 +223,14 @@ class ReadoutProcessorController(RegisterAccessorController):
                 self.write_field(1, control, bit)
         except (ReadoutProcessorError, ControllerError) as err:
             logging.error("SETUP AFTER RESET FAILED: %s", err)
+
+    def frame_number_changing(self):
+        """Frame number changes so fast I think just reading twice will do the trick"""
+
+        first = (self.read_register(self.registers.frame_num_lower)
+                 | (self.read_register(self.registers.frame_num_upper) << 32))
+        second = (self.read_register(self.registers.frame_num_lower)
+                  | (self.read_register(self.registers.frame_num_upper) << 32))
+        third = (self.read_register(self.registers.frame_num_lower)
+                 | (self.read_register(self.registers.frame_num_upper) << 32))
+        return any((first != second, first != third, second != third))
