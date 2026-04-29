@@ -17,6 +17,8 @@ class TriggerRegisters:
     frames_per_tf: Register = None
     tf_per_trigger_lower: Register = None
     tf_per_trigger_upper: Register = None
+    timeframe_count_lower: Register = None
+    timeframe_count_upper: Register = None
 
 
 @dataclass
@@ -29,16 +31,16 @@ class TriggerFields:
 
 
 class TriggerModes(IntEnum):
-    STEP_SCAN = 0b00
-    BURST_MODE = 0b01
-    CONTINUOUS_MODE = 0b10
+    STEP_SCAN = 0
+    BURST_MODE = 2
+    CONTINUOUS_MODE = 1
 
 
 class TriggerPolarity(IntEnum):
-    LEVEL_HIGH = 0b00
-    LEVEL_LOW = 0b01
-    RISING_EDGE = 0b10
-    FALLING_EDGE = 0b11
+    LEVEL_HIGH = 0
+    LEVEL_LOW = 1
+    RISING_EDGE = 2
+    FALLING_EDGE = 3
 
 
 class TriggerController:
@@ -55,6 +57,8 @@ class TriggerController:
         "frames_per_tf": "sequence_count_flimit",
         "tf_per_trigger_lower": "histogram_count_flimit_lower",
         "tf_per_trigger_upper": "histogram_count_flimit_upper",
+        "timeframe_count_lower": "time_frame_lower",
+        "timeframe_count_upper": "time_frame_upper",
 
     }
     """Dict of regsiters for the Trigger Controls. will be prefixed with TRIGGER_REGNAME_PREFIX"""
@@ -103,7 +107,15 @@ class TriggerController:
                         self.registers.acq_current_upper
                         ),
                 None,
-                {"description": "Frames in current Acquisition. 48 Bits"}
+                {"description": "Frames in current Acquisition. 48 Bits"},
+            ),
+            "timeframe_count": (
+                partial(self.read_large_val,
+                        self.registers.timeframe_count_lower,
+                        self.registers.timeframe_count_upper
+                        ),
+                None,
+                {"description": "Total Time Frames in Acquisition. 35 Bits"}
             ),
             "frame_limits": {
                 "acquisition": (
