@@ -180,6 +180,8 @@ class ReadoutProcessorController(RegisterAccessorController):
             status = False
         if not self.read_field(cmac, cmac_1):
             status = False
+        if not self.frame_number_changing():
+            status = False
         return status
 
     def reset(self):
