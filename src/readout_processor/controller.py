@@ -2,10 +2,10 @@
 import logging
 from dataclasses import dataclass
 from functools import partial
-from typing import Callable
 
-from odin.adapters.parameter_tree import ParameterTree, ParameterTreeError
+from odin_control.adapters.parameter_tree import ParameterTreeError
 from RegisterAccessor.controller import ControllerError, RegisterAccessorController
+from RegisterAccessor.controller import _get_bitwise_trailing_zeros
 from RegisterAccessor.RegisterMap import Register
 
 from .udp_core import UdpCore
@@ -42,29 +42,26 @@ class ReadoutProcessorController(RegisterAccessorController):
                    "cmac_status": "cmac_status"}
     """Dict of specific registers to get from the full register map"""
 
+    AURORA_GOOD_VAL = 0xFFFFF
+
     def __init__(self, options):
         super().__init__(options)
 
-        # overriding RegisterAccessor Param Tree creation
-        tree = {}
-        tree["control"] = {
-            "open": (None, lambda _: self.open_device(),
-                     {"description": "Open connection to the device"}),
-            "close": (None, lambda _: self.accessor.close(),
-                      {"description": "Close connection to the device"}),
-            "connected": (lambda: self.accessor.isConnected, None)
-        }
+    def get_tree(self):
+        tree = super().get_tree()
+
+        # remove full register map from tree
+        tree.pop("registers", None)
 
         # setup UDP trees
-        udp_0 = UdpCore(self.register_map, 0,
-                        self.create_read_access_param, self.write_register)
-        udp_1 = UdpCore(self.register_map, 1,
-                        self.create_read_access_param, self.write_register)
+        udp_0 = UdpCore(self.register_map, 0, self.read_register, self.write_register)
+        udp_1 = UdpCore(self.register_map, 1, self.read_register, self.write_register)
         tree["udp"] = {
             "core_0": udp_0.tree,
             "core_1": udp_1.tree
         }
 
+        # setup trigger tree
         trigger = TriggerController(
             self.register_map,
             self.read_register, self.write_register,
@@ -81,25 +78,11 @@ class ReadoutProcessorController(RegisterAccessorController):
         except StopIteration:
             logging.error("One of the required Registers could not be found in the Register Map.")
 
-        clock_resets_tree = self.create_reg_paramTree(self.registers.clock_resets)['fields']
-        selected_resets = {k: clock_resets_tree[k] for k in
-                           ("cmac_0_reset", "cmac_1_reset", "cmac_2_reset",
-                            "aurora_reset", "data_path_reset")}
-
-        control_tree = self.create_reg_paramTree(self.registers.acq_control)['fields']
-
-        cmac_tree = self.create_reg_paramTree(self.registers.cmac_status)['fields']
-        selected_cmac = {k: cmac_tree[k] for k in ("cmac_0_lane_up", "cmac_1_lane_up")}
-
-        aurora_lane_read = self.create_read_access_param(self.registers.aurora_lane)
-        aurora_chan_read = self.create_read_access_param(self.registers.aurora_channel)
-
-        frame_num_upper_read = self.create_read_access_param(self.registers.frame_num_upper)
-        frame_num_lower_read = self.create_read_access_param(self.registers.frame_num_lower)
-
-        # value for an active aurora lane/channel.
-        # Any other value means something is wrong
-        self.aurora_good_val = 0xFFFFF
+        selected_resets = ["cmac_0_reset", "cmac_1_reset", "cmac_2_reset",
+                           "aurora_reset", "data_path_reset"]
+        clock_resets = self.create_bit_tree(self.registers.clock_resets)
+        control_tree = self.create_bit_tree(self.registers.acq_control)
+        cmac_tree = self.create_bit_tree(self.registers.cmac_status)
 
         tree["status"] = {
             "is_running": (self.get_connection_status, None,
@@ -110,25 +93,22 @@ class ReadoutProcessorController(RegisterAccessorController):
             "reactivate": (None, lambda _: self.setup_after_reset(),
                            {"description": "Reactivate readout after a reset process"}),
             "aurora": {
-                "lane": (lambda: aurora_lane_read() == self.aurora_good_val, None,
+                "lane": (partial(self.get_aurora_status, self.registers.aurora_lane), None,
                          {"description": "Aurora Lane Status"}),
-                "channel": (lambda: aurora_chan_read() == self.aurora_good_val, None,
+                "channel": (partial(self.get_aurora_status, self.registers.aurora_channel), None,
                             {"description": "Aurora Channel Status"})
             },
             "frame_number": (partial(self.get_frame_num,
-                                     frame_num_upper_read, frame_num_lower_read),
+                                     self.registers.frame_num_upper,
+                                     self.registers.frame_num_lower),
                              None, {"description": "Current Frame number, 48 bit value"}),
             "frame_changing": (self.frame_number_changing, None),
-            "clock_resets": selected_resets,
+            "clock_resets": {k: clock_resets[k] for k in selected_resets},
             "acq_control": control_tree,
-            "cmac": selected_cmac
+            "cmac": {k: cmac_tree[k] for k in ("cmac_0_lane_up", "cmac_1_lane_up")}
         }
 
-        self.param_tree = ParameterTree(tree)
-
-    def initialize(self, adapters):
-        self.adapters = adapters
-        logging.debug(f"Adapters initialized: {list(adapters.keys())}")
+        return tree
 
     def cleanup(self):
         logging.info("Cleaning up ReadoutProcessorController")
@@ -147,12 +127,29 @@ class ReadoutProcessorController(RegisterAccessorController):
             logging.error(error)
             raise ReadoutProcessorError(error)
 
-    def get_frame_num(self, read_access_upper: Callable[[], int],
-                      read_access_lower: Callable[[], int]) -> str:
-        upper = read_access_upper()
-        lower = read_access_lower()
+    def create_bit_tree(self, reg: Register):
+        fields = {
+            bit.name: (
+                partial(self.read_field, register=reg, bitField=bit),
+                None if not bit.write else partial(
+                    self.write_field, register=reg, bitField=bit
+                ),
+                {"description": bit.desc,
+                 "min": 0,
+                 "max": bit.mask >> _get_bitwise_trailing_zeros(bit.mask)}
+            ) for bit in reg.bitFields
+        }
+
+        return fields
+
+    def get_frame_num(self, upper_reg: Register, lower_reg: Register) -> str:
+        upper = self.read_register(upper_reg)
+        lower = self.read_register(lower_reg)
 
         return lower | (upper << 32)
+    
+    def get_aurora_status(self, reg: Register):
+        return self.read_register(reg) == self.AURORA_GOOD_VAL
 
     def get_connection_status(self) -> bool:
         status = True

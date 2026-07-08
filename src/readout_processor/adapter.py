@@ -1,9 +1,9 @@
-from RegisterAccessor.base.base_adapter import BaseAdapter
+from odin_control.adapters.adapter import ApiAdapter
 
 from .controller import ReadoutProcessorController, ReadoutProcessorError
 
 
-class ReadoutProcessorAdapter(BaseAdapter):
+class ReadoutProcessorAdapter(ApiAdapter):
     """READOUTPROCESSOR Adapter class inheriting base adapter functionality."""
 
     controller_cls = ReadoutProcessorController
