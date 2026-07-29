@@ -13,8 +13,8 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
 ]
 dependencies = [
-    "odin-control @ git+https://github.com/odin-detector/odin-control",
-    "RegisterAccessor @ git+ssh://git@github.com/stfc-aeg/memory-accessor@v1.1.0#subdirectory=control"
+    "odin-control>=2.0",
+    "RegisterAccessor @ git+ssh://git@github.com/stfc-aeg/memory-accessor@v2.0.1"
 ]
 readme = "README.md"
 
@@ -23,7 +23,7 @@ email = "ashley.neaves@stfc.ac.uk"
 name = "Ashley Neaves"
 
 [project.urls]
-GitHub = "https://github.com/stfc-aeg/readout_processor"
+GitHub = "https://github.com/stfc-aeg/MHz-Readout-Processor"
 
 [tool.setuptools.packages.find]
 where = ["src"]
