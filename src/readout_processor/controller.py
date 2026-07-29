@@ -147,7 +147,7 @@ class ReadoutProcessorController(RegisterAccessorController):
         lower = self.read_register(lower_reg)
 
         return lower | (upper << 32)
-    
+
     def get_aurora_status(self, reg: Register):
         return self.read_register(reg) == self.AURORA_GOOD_VAL
 
@@ -166,12 +166,9 @@ class ReadoutProcessorController(RegisterAccessorController):
         cmac_1 = next(bit for bit in cmac.bitFields
                       if bit.name == "cmac_1_lane_up")
 
-        # this value means the aurora chan/lane values are valid.
-        aurora_good_val = 0xFFFFF
-
-        if self.read_register(chan) != aurora_good_val:
+        if not self.get_aurora_status(chan):
             status = False
-        if self.read_register(lane) != aurora_good_val:
+        if not self.get_aurora_status(lane):
             status = False
         if not self.read_field(cmac, cmac_0):
             status = False
