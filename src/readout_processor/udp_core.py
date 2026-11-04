@@ -1,3 +1,4 @@
+import logging
 import sys
 from functools import partial
 from ipaddress import ip_address
@@ -7,15 +8,22 @@ from RegisterAccessor.RegisterMap import Register, RegisterMap, RegisterMapDict
 
 
 class UdpCore:
+    """UDP Handling class for the Readout Processor."""
 
-    def __init__(self, regMap: RegisterMap, core: int,
-                 read_reg: Callable[[Register], int],
-                 write_reg: Callable[[int | bytes, Register], None]):
-
+    def __init__(
+        self,
+        regMap: RegisterMap,
+        core: int,
+        read_reg: Callable[[Register], int],
+        write_reg: Callable[[int | bytes, Register], None],
+        config: dict[str, str],
+    ):
+        """Initialise the UDP Core."""
         core_map: RegisterMapDict = regMap.map["udp_core_0_{}".format(core)]
 
         self.read_reg = read_reg
         self.write_reg = write_reg
+        self.config = {k: config[k] for k in config.keys() if f"udp_{core}" in k}
 
         src_mac_upper: Register = next(regMap.getReg(
             "udp_core_control_src_mac_addr_upper", core_map))
@@ -34,19 +42,39 @@ class UdpCore:
         self.dst_ip: Register = next(regMap.getReg("udp_core_control_dst_ip_addr", core_map))
 
         self.tree = {
-            "dest_ip": (partial(self.get_ip, self.dst_ip),
-                        partial(self.set_ip, self.dst_ip),
-                        {"description": self.dst_ip.desc}),
-            "src_ip":  (partial(self.get_ip, self.src_ip),
-                        partial(self.set_ip, self.src_ip),
-                        {"description": self.src_ip.desc}),
-            "src_mac": (partial(self.get_mac, self.src_mac),
-                        partial(self.set_mac, self.src_mac),
-                        {"description": "Source MAC Address"}),
-            "dest_mac": (partial(self.get_mac, self.dst_mac),
-                         partial(self.set_mac, self.dst_mac),
-                         {"description": "Destination MAC Address"})
+            "dest_ip": (
+                partial(self.get_ip, self.dst_ip),
+                partial(self.set_ip, self.dst_ip),
+                {"description": self.dst_ip.desc},
+            ),
+            "src_ip": (
+                partial(self.get_ip, self.src_ip),
+                partial(self.set_ip, self.src_ip),
+                {"description": self.src_ip.desc},
+            ),
+            "src_mac": (
+                partial(self.get_mac, self.src_mac),
+                partial(self.set_mac, self.src_mac),
+                {"description": "Source MAC Address"},
+            ),
+            "dest_mac": (
+                partial(self.get_mac, self.dst_mac),
+                partial(self.set_mac, self.dst_mac),
+                {"description": "Destination MAC Address"},
+            ),
         }
+
+    def on_connect(self):
+        """Once the XDMA connection is open, set any IP/MAC addresses set in the config file."""
+        for key, val in self.config.items():
+            if "dst_ip" in key or "dest_ip" in key:
+                self.set_ip(self.dst_ip, val)
+            elif "src_ip" in key:
+                self.set_ip(self.src_ip, val)
+            elif "src_mac" in key:
+                self.set_mac(self.src_mac, val)
+            elif "dst_mac" in key or "dest_mac" in key:
+                self.set_mac(self.dst_mac, val)
 
     def get_ip(self, reg: Register) -> str:
         addr = ip_address(self.read_reg(reg))
@@ -68,7 +96,7 @@ class UdpCore:
             (full_val >> 24) & 0xFF,
             (full_val >> 16) & 0xFF,
             (full_val >> 8) & 0xFF,
-            (full_val) & 0xFF
+            (full_val) & 0xFF,
         ]
         return ":".join(f"{val:02X}" for val in parts)
 
