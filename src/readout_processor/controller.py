@@ -49,6 +49,7 @@ class ReadoutProcessorController(RegisterAccessorController):
     AURORA_GOOD_VAL = 0xFFFFF
 
     def __init__(self, options):
+        self.udp_config = {k: options[k] for k in options.keys() if "udp" in k}
         super().__init__(options)
 
     def get_tree(self):
@@ -58,9 +59,13 @@ class ReadoutProcessorController(RegisterAccessorController):
         tree.pop("registers", None)
 
         # setup UDP trees
-        udp_0 = UdpCore(self.register_map, 0, self.read_register, self.write_register)
-        udp_1 = UdpCore(self.register_map, 1, self.read_register, self.write_register)
-        tree["udp"] = {"core_0": udp_0.tree, "core_1": udp_1.tree}
+        self.udp = [
+            UdpCore(self.register_map, 0, self.read_register, self.write_register, self.udp_config),
+            UdpCore(self.register_map, 1, self.read_register, self.write_register, self.udp_config)
+        ]
+        tree["udp"] = {
+            f"core_{i}": udp.tree for i, udp in enumerate(self.udp)
+        }
 
         # setup trigger tree
         trigger = TriggerController(
@@ -165,6 +170,14 @@ class ReadoutProcessorController(RegisterAccessorController):
         except (ParameterTreeError, ControllerError) as error:
             logging.error(error)
             raise ReadoutProcessorError(error)
+
+    def set_connect(self, connect):
+        super().set_connect(connect)
+
+        if connect:
+            for udp in self.udp:
+                udp.on_connect()
+        
 
     def create_bit_tree(self, reg: Register):
         fields = {
