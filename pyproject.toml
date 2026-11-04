@@ -14,7 +14,7 @@ classifiers = [
 ]
 dependencies = [
     "odin-control>=2.0",
-    "RegisterAccessor @ git+ssh://git@github.com/stfc-aeg/memory-accessor@v2.0.1"
+    "RegisterAccessor @ git+https://github.com/stfc-aeg/memory-accessor@v2.0.1"
 ]
 readme = "README.md"
 
